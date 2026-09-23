@@ -521,8 +521,13 @@ function statusPillFor(status){
    VIEW: LANDING
 ========================================================= */
 route("/", async function(){
-  var stats = { creators: 50, campaigns: 10, paidToCreators: 10000, companyWalletAddress: null };
-  try { stats = await apiGet("/stats"); } catch(e) { /* fine to show zeros */ }
+  var stats = { creators: 0, campaigns: 0, paidToCreators: 0, companyWalletAddress: null };
+  try { stats = await apiGet("/stats"); } catch(e) { /* fall back to the base numbers below */ }
+  // Starting base for the public counters; real numbers add on top of these.
+  var BASE_CREATORS = 50, BASE_CAMPAIGNS = 20, BASE_PAID = 10000;
+  var shownCreators  = BASE_CREATORS  + (Number(stats.creators) || 0);
+  var shownCampaigns = BASE_CAMPAIGNS + (Number(stats.campaigns) || 0);
+  var shownPaid      = BASE_PAID      + (Number(stats.paidToCreators) || 0);
   return marketingNav() +
   '<div class="container">' +
     '<div class="hero">' +
@@ -536,9 +541,9 @@ route("/", async function(){
           '</div>' +
         '</div>' +
         '<div class="hero-stats">' +
-          '<div><div class="stat-num">'+fmtNum(stats.creators)+'</div><div class="stat-label">Registered creators</div></div>' +
-          '<div><div class="stat-num">'+fmtNum(stats.campaigns)+'</div><div class="stat-label">Campaigns run</div></div>' +
-          '<div><div class="stat-num">'+fmtMoney(stats.paidToCreators)+'</div><div class="stat-label">Paid to creators</div></div>' +
+          '<div><div class="stat-num">'+fmtNum(shownCreators)+'</div><div class="stat-label">Registered creators</div></div>' +
+          '<div><div class="stat-num">'+fmtNum(shownCampaigns)+'</div><div class="stat-label">Campaigns run</div></div>' +
+          '<div><div class="stat-num">'+fmtMoney(shownPaid)+'</div><div class="stat-label">Paid to creators</div></div>' +
         '</div>' +
       '</div>' +
     '</div>' +
@@ -770,16 +775,58 @@ function socialSummary(socials){
 function campaignRowMini(cp){
   return '<div class="camp-card"><div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+escapeHtml(cp.projectName||"")+' · '+cp.durationDays+' days · '+cp.creatorsNeeded+' creators needed</div></div>'+statusPillFor(cp.submission ? cp.submission.status : "no_submission")+'</div></div>';
 }
+/* ---- Multiple post links per campaign ---- */
+function subLinks(o){
+  if(!o) return [];
+  var arr = o.postUrls || o.links || null;
+  if(arr && arr.length) return arr.map(function(l){ return typeof l === "string" ? l : (l && (l.url || l.postUrl)); }).filter(Boolean);
+  return o.postUrl ? [o.postUrl] : [];
+}
+function linksInline(o){
+  var l = subLinks(o);
+  if(!l.length) return "—";
+  return l.map(function(u,i){
+    return '<a href="'+escapeHtml(u)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+(l.length>1 ? 'link '+(i+1) : 'view')+'</a>';
+  }).join(" · ");
+}
+function campaignEnd(cp){
+  if(cp.endsAt) return new Date(cp.endsAt);
+  var start = cp.startedAt || cp.verifiedAt || cp.paymentVerifiedAt || cp.createdAt;
+  if(!start || !cp.durationDays) return null;
+  var d = new Date(start);
+  if(isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + Number(cp.durationDays));
+  return d;
+}
+function campaignOpen(cp){
+  var end = campaignEnd(cp);
+  return !end || isNaN(end.getTime()) || Date.now() < end.getTime();
+}
+function campaignDeadlineNote(cp){
+  var end = campaignEnd(cp);
+  if(!end || isNaN(end.getTime())) return "";
+  var ms = end.getTime() - Date.now();
+  if(ms <= 0) return "Campaign ended " + end.toLocaleDateString();
+  var days = Math.ceil(ms / 86400000);
+  return "Closes " + end.toLocaleDateString() + " (" + days + " day" + (days===1?"":"s") + " left)";
+}
+
 function campaignCardFull(cp){
   var sub = cp.submission;
   var html = '<div class="camp-card">' +
     '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+escapeHtml(cp.projectName||"")+' · '+cp.durationDays+' days · '+cp.creatorsNeeded+' creators needed'+(cp.paymentVerified ? '' : ' · <span class="pill pill-muted">Payment not yet verified</span>')+'</div></div>'+statusPillFor(sub ? sub.status : "no_submission")+'</div>' +
     '<div class="camp-meta" style="margin-top:8px;">'+escapeHtml(cp.description)+'</div>';
+  var open = campaignOpen(cp);
+  var links = subLinks(sub);
+  if(links.length){
+    html += '<div class="camp-meta" style="margin-top:10px;">Your links ('+links.length+'):</div>' +
+      '<ul style="margin:6px 0 0 18px;padding:0;">' + links.map(function(u){
+        return '<li class="camp-meta" style="margin:2px 0;"><a href="'+escapeHtml(u)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+escapeHtml(u.length>60?u.slice(0,57)+"…":u)+'</a></li>';
+      }).join("") + '</ul>';
+  }
   if(sub){
-    html += '<div class="camp-meta" style="margin-top:10px;">Your link: <a href="'+escapeHtml(sub.postUrl)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+escapeHtml(sub.postUrl.length>50?sub.postUrl.slice(0,47)+"…":sub.postUrl)+'</a></div>';
     if(sub.status === "submitted"){
-      html += '<div class="field-hint" style="margin-top:6px;">Submitted — waiting for us to check the post and confirm your numbers.</div>' +
-        '<div class="camp-actions"><button class="btn btn-line btn-sm" data-action="editSubmission" data-camp="'+cp.id+'">Replace link</button></div>';
+      html += '<div class="field-hint" style="margin-top:6px;">Submitted — waiting for us to check your posts and confirm your numbers.</div>';
     } else if(sub.status === "verified"){
       html += '<div class="camp-meta" style="margin-top:4px;">Verified: '+fmtNum(sub.views)+' views · '+fmtNum(sub.likes)+' likes · payout <b style="color:var(--accent);">'+fmtMoney(sub.payout)+'</b></div>' +
         '<div class="field-hint" style="margin-top:6px;">Verified — funds are sent shortly after.</div>';
@@ -787,11 +834,16 @@ function campaignCardFull(cp){
       html += '<div class="camp-meta" style="margin-top:4px;">Verified: '+fmtNum(sub.views)+' views · '+fmtNum(sub.likes)+' likes</div>' +
         '<div class="camp-meta" style="margin-top:4px;">Paid: <b style="color:var(--accent);">'+fmtMoney(sub.payout)+'</b></div>';
     }
-  } else {
+  }
+  var note = campaignDeadlineNote(cp);
+  if(open){
     html += '<div class="submit-row" style="grid-template-columns: 1fr auto;">' +
-      '<div class="field"><label>Link to your post</label><input type="url" data-field="postUrl" placeholder="https://x.com/you/status/..."></div>' +
-      '<button class="btn btn-primary btn-sm" data-action="submitLink" data-camp="'+cp.id+'">Submit link</button>' +
-    '</div>';
+      '<div class="field"><label>'+(links.length ? 'Add another link' : 'Link to your post')+'</label><input type="url" data-field="postUrl" placeholder="https://x.com/you/status/..."></div>' +
+      '<button class="btn btn-primary btn-sm" data-action="submitLink" data-camp="'+cp.id+'">'+(links.length ? 'Add link' : 'Submit link')+'</button>' +
+    '</div>' +
+    '<div class="field-hint" style="margin-top:6px;">You can add as many links as you like while the campaign is running.'+(note ? ' '+note+'.' : '')+'</div>';
+  } else {
+    html += '<div class="field-hint" style="margin-top:10px;">'+(note || "This campaign has ended")+' — new links can no longer be added.</div>';
   }
   html += '</div>';
   return html;
@@ -874,7 +926,7 @@ function projectCampaignFull(cp){
   if(cp.assignments && cp.assignments.length){
     html += '<table style="margin-top:14px;"><thead><tr><th>Creator</th><th>Post</th><th>Views</th><th>Likes</th><th>Payout</th><th>Status</th></tr></thead><tbody>' +
       cp.assignments.map(function(a){
-        return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+(a.postUrl?'<a href="'+escapeHtml(a.postUrl)+'" target="_blank" rel="noopener" style="color:var(--accent);">view</a>':'—')+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td></tr>';
+        return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+linksInline(a)+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td></tr>';
       }).join("") + '</tbody></table>';
   } else if(cp.paymentVerified){
     html += '<div class="camp-meta" style="margin-top:10px;">No creators assigned yet.</div>';
@@ -936,7 +988,7 @@ function adminCampaignCard(cp, creators){
     if(cp.assignments && cp.assignments.length){
       html += '<table><thead><tr><th>Creator</th><th>Post</th><th>Views</th><th>Likes</th><th>Payout</th><th>Status</th><th></th></tr></thead><tbody>' +
         cp.assignments.map(function(a){
-          return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+(a.postUrl?'<a href="'+escapeHtml(a.postUrl)+'" target="_blank" rel="noopener" style="color:var(--accent);">view</a>':'—')+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td><td><button class="btn btn-line btn-sm" data-action="unassignCreator" data-camp="'+cp.id+'" data-creator="'+a.creatorId+'">Remove</button></td></tr>';
+          return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+linksInline(a)+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td><td><button class="btn btn-line btn-sm" data-action="unassignCreator" data-camp="'+cp.id+'" data-creator="'+a.creatorId+'">Remove</button></td></tr>';
         }).join("") + '</tbody></table>';
     } else {
       html += emptyState("No creators assigned yet","Pick one from the list above.");
@@ -956,7 +1008,7 @@ route("/admin/submissions", async function(){
 });
 function adminSubmissionCard(s){
   var html = '<div class="camp-card">' +
-    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(s.creatorName)+'</div><div class="camp-meta">'+escapeHtml(s.campaignTitle)+(s.postUrl?' · <a href="'+escapeHtml(s.postUrl)+'" target="_blank" rel="noopener" style="color:var(--accent);">view post</a>':'')+'</div></div>'+statusPillFor(s.status)+'</div>';
+    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(s.creatorName)+'</div><div class="camp-meta">'+escapeHtml(s.campaignTitle)+(subLinks(s).length?' · '+linksInline(s):'')+'</div></div>'+statusPillFor(s.status)+'</div>';
   if(s.status === "submitted"){
     html += '<div class="submit-row">' +
       '<div class="field"><label>Views</label><input type="number" min="0" class="rv-views" placeholder="0"></div>' +
@@ -1128,26 +1180,17 @@ function wireGlobal(){
     });
   }
 
-  document.querySelectorAll('[data-action="submitLink"], [data-action="editSubmission"]').forEach(function(btn){
+  document.querySelectorAll('[data-action="submitLink"]').forEach(function(btn){
     btn.addEventListener("click", async function(){
       var campId = btn.getAttribute("data-camp");
-      if(btn.getAttribute("data-action")==="editSubmission"){
-        var card = btn.closest(".camp-card");
-        card.querySelector(".camp-actions").insertAdjacentHTML("beforebegin",
-          '<div class="submit-row" style="grid-template-columns: 1fr auto;margin-top:10px;">' +
-            '<div class="field"><label>New link to your post</label><input type="url" data-field="postUrl" placeholder="https://x.com/you/status/..."></div>' +
-            '<button class="btn btn-primary btn-sm" data-action="submitLink" data-camp="'+campId+'">Submit link</button>' +
-          '</div>');
-        wireGlobal();
-        return;
-      }
       var card = btn.closest(".camp-card");
       var input = card.querySelector('[data-field="postUrl"]');
       var postUrl = (input ? input.value : "").trim();
       if(!postUrl){ toast("Paste a link to your post first.", true); return; }
+      if(!/^https?:\/\//i.test(postUrl)){ toast("Links must start with http:// or https://", true); return; }
       try{
         await apiPost("/creators/me/campaigns/"+campId+"/submit", { postUrl: postUrl });
-        toast("Link submitted — we\'ll review it soon.");
+        toast("Link added — we\'ll review it soon.");
         render();
       }catch(err){ toast(err.message, true); }
     });
