@@ -1,0 +1,5 @@
+node_modules/
+.env
+nexora-data.json
+npm-debug.log*
+ADMIN_CREDENTIALS.txt
