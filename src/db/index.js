@@ -33,8 +33,12 @@ function findAdminByEmail(email) {
 }
 function ensureAdminSeed() {
   if (data.admins.length) return;
-  const email = (process.env.ADMIN_EMAIL || "jideekeocha@gmail.com").toLowerCase();
-  const password = process.env.ADMIN_PASSWORD || "5hZQdK_yTmUw8PQzsa";
+  const email = (process.env.ADMIN_EMAIL || process.env.ADMIN_EMAIL1).toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD1;
+  if (!email || !password) {
+    console.warn("[nexora] WARNING: No admin account seeded because ADMIN_EMAIL / ADMIN_PASSWORD are not set in .env.");
+    return;
+  }
   data.admins.push({ id: "admin_" + Date.now(), email, password_hash: bcrypt.hashSync(password, 12), created_at: Date.now() });
   save();
   console.log(`Seeded admin account for ${email}. Set ADMIN_EMAIL / ADMIN_PASSWORD in .env before deploying anywhere public.`);
