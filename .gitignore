@@ -3,3 +3,4 @@ node_modules/
 nexora-data.json
 npm-debug.log*
 ADMIN_CREDENTIALS.txt
+package.json
