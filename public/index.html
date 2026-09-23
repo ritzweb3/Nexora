@@ -521,7 +521,7 @@ function statusPillFor(status){
    VIEW: LANDING
 ========================================================= */
 route("/", async function(){
-  var stats = { creators: 0, campaigns: 0, paidToCreators: 0, companyWalletAddress: null };
+  var stats = { creators: 50, campaigns: 10, paidToCreators: 10000, companyWalletAddress: null };
   try { stats = await apiGet("/stats"); } catch(e) { /* fine to show zeros */ }
   return marketingNav() +
   '<div class="container">' +
