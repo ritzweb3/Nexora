@@ -2,10 +2,11 @@
 
 A creator x project marketplace built around **manual verification**: projects
 send campaign funds straight to your company wallet, you confirm receipt by
-eye, creators post and submit a link, you check the real numbers yourself and
-send the payout to their registered wallet. The app's job is to collect the
-details, track status, and do the arithmetic -- not to move money or verify
-anything automatically. Sign-in is email/password or Google only.
+eye, assigned creators can submit unlimited post links until a campaign's
+deadline, and you check each link's real numbers yourself before paying their
+registered wallet. The app's job is to collect the details, track each link's
+status, and do the arithmetic -- not to move money or verify anything
+automatically. Sign-in is email/password or Google only.
 
 Everything runs as **one single app** (one server, one port, one thing to
 deploy) -- the front end is served by the same Express server that runs the
@@ -50,7 +51,8 @@ npm test
 ## How a campaign actually works (this is the whole product)
 
 1. **Project creates a campaign** -- title, brief, how many creators they
-   need, how long it runs. They see your company wallet address on this
+   need, how long it runs, an about section, and at least one social handle
+   so creators can learn about the project. They see your company wallet address on this
    page and a checkbox: "I've sent the funds." They can check it now or
    come back later once they've actually sent the money.
 2. **You verify the payment yourself** -- check the chain by hand
@@ -60,9 +62,12 @@ npm test
    automatically anywhere in this app.
 3. **You assign creators** -- also by hand, from the same admin campaign
    page. There's no matching algorithm; you pick who's right for it.
-4. **Creators submit a link** once they've posted. That's all they enter --
-   no view/like numbers from them.
-5. **You review it** (`/admin/submissions`) -- look at the real post,
+4. **Creators can browse every campaign** on the creator marketplace. They
+   can submit links only to campaigns assigned to them, with no submission
+   count limit before the campaign countdown expires. Each post link is
+   tracked independently; creators can see whether each one is awaiting
+   review, verified/pending payout, or paid.
+5. **You review each link** (`/admin/submissions`) -- look at the real post,
    type in the views and likes you actually see, and either use "Suggest"
    (a simple rate-per-1000-views / rate-per-500-likes calculator) or type
    your own payout number. Nothing here trusts the creator's self-report.
@@ -73,8 +78,10 @@ npm test
 Every status change is visible on the relevant dashboard immediately --
 projects see their campaign go from "awaiting your payment" to "awaiting our
 verification" to "live" to seeing real payout numbers per creator; creators
-see "submitted" -> "verified" -> "paid." The emails are a convenience on top
-of that, not a replacement for it.
+see the per-link status "submitted" -> "verified" -> "paid." The creator and
+admin leaderboards total views and likes from verified links and show each
+creator's total paid. The emails are a convenience on top of that, not a
+replacement for it.
 
 ## What's real here
 
@@ -208,25 +215,26 @@ All authenticated routes take `Authorization: Bearer <token>`.
 - `PUT /creators/me/socials`
 - `PUT /creators/me/wallet` `{ walletAddress }` -- for Google sign-ups completing their profile
 - `GET /creators/me/campaigns`
+- `GET /creators/campaigns` -- full campaign marketplace with assignment state and project socials
 - `POST /creators/me/campaigns/:id/submit` `{ postUrl }`
 - `GET /creators/me/payments`
 - `GET /creators/leaderboard`
 
 **Project**
 - `GET /projects/me`
-- `POST /projects/campaigns` `{ title, description, creatorsNeeded, durationDays, amountSent?, paymentSent? }`
+- `POST /projects/campaigns` `{ title, description, projectAbout, socials, creatorsNeeded, durationDays, amountSent?, paymentSent? }`
 - `POST /projects/campaigns/:id/mark-payment-sent` `{ amountSent? }`
 - `GET /projects/me/campaigns`
 - `GET /projects/campaigns/:id`
 
 **Admin**
-- `GET /admin/overview` / `/rates` / `/campaigns` / `/campaigns/:id` / `/creators` / `/submissions/pending` / `/rankings` / `/ledger` / `/financials`
+- `GET /admin/overview` / `/rates` / `/campaigns` / `/campaigns/:id` / `/creators` / `/submissions/pending` / `/submissions/all` / `/rankings` / `/ledger` / `/financials`
 - `POST /admin/suggest-payout` `{ views, likes }`
 - `POST /admin/campaigns/:id/verify-payment`
 - `POST /admin/campaigns/:id/assign` `{ creatorId }`
 - `POST /admin/campaigns/:id/unassign` `{ creatorId }`
-- `POST /admin/submissions/:campaignId/:creatorId/review` `{ views, likes, payout }`
-- `POST /admin/submissions/:campaignId/:creatorId/mark-paid`
+- `POST /admin/submissions/:submissionId/review` `{ views, likes, payout }`
+- `POST /admin/submissions/:submissionId/mark-paid`
 
 **Public**
 - `GET /stats` -- creator/campaign counts + company wallet address, for the landing/campaign-creation pages

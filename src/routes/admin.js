@@ -2,6 +2,7 @@ const express = require("express");
 const db = require("../db");
 const { requireAuth } = require("../middleware/auth");
 const { suggestPayout } = require("../utils/payout");
+const { id } = require("../utils/ids");
 const { campaignSummary } = require("./projects");
 
 const router = express.Router();
@@ -80,16 +81,9 @@ router.post("/campaigns/:id/unassign", (req, res) => {
 /** All submissions still needing admin attention, across every campaign —
  * a single work queue instead of clicking into each campaign separately. */
 router.get("/submissions/pending", (req, res) => {
-  const rows = [];
-  db.listAllCampaigns().forEach((c) => {
-    db.getCampaignSubmissionsView(c.id).forEach((s) => {
-      if (s.status === "submitted" || s.status === "verified") {
-        rows.push({ ...s, campaignId: c.id, campaignTitle: c.title });
-      }
-    });
-  });
-  res.json(rows);
+  res.json(db.getAllSubmissionsView().filter((s) => s.status === "submitted" || s.status === "verified"));
 });
+router.get("/submissions/all", (req, res) => res.json(db.getAllSubmissionsView()));
 
 /** Step 1: admin has looked at the actual post and enters what they saw,
  * plus the amount they've decided to pay. Doesn't move any money yet. */
@@ -98,14 +92,27 @@ router.post("/submissions/:campaignId/:creatorId/review", (req, res) => {
   const { views, likes, payout } = req.body || {};
   const payoutNum = Number(payout);
   if (!Number.isFinite(payoutNum) || payoutNum < 0) return res.status(400).json({ error: "payout must be a non-negative number." });
-  const sub = db.findSubmission(campaignId, creatorId);
+  const matching = db.listSubmissionsForCampaign(campaignId).filter((s) => s.creator_id === creatorId);
+  if (matching.length > 1) return res.status(409).json({ error: "Use the submission ID endpoint when this creator has multiple campaign links." });
+  const sub = matching[0];
   if (!sub) return res.status(404).json({ error: "Submission not found." });
-  const updated = db.saveSubmissionReview(campaignId, creatorId, {
-    views: views === undefined || views === "" ? null : Number(views),
-    likes: likes === undefined || likes === "" ? null : Number(likes),
-    payout: payoutNum,
-    verifiedAt: Date.now(),
-  });
+  if (sub.status === "paid") return res.status(409).json({ error: "Paid submissions cannot be reviewed again." });
+  const metrics = submissionMetrics(views, likes);
+  if (metrics.error) return res.status(400).json({ error: metrics.error });
+  const updated = db.saveSubmissionReviewById(sub.id, { ...metrics, payout: payoutNum, verifiedAt: Date.now() });
+  res.json({ ok: true, submission: updated });
+});
+router.post("/submissions/:submissionId/review", (req, res) => {
+  const { submissionId } = req.params;
+  const { views, likes, payout } = req.body || {};
+  const payoutNum = Number(payout);
+  if (!Number.isFinite(payoutNum) || payoutNum < 0) return res.status(400).json({ error: "payout must be a non-negative number." });
+  const sub = db.findSubmissionById(submissionId);
+  if (!sub) return res.status(404).json({ error: "Submission not found." });
+  if (sub.status === "paid") return res.status(409).json({ error: "Paid submissions cannot be reviewed again." });
+  const metrics = submissionMetrics(views, likes);
+  if (metrics.error) return res.status(400).json({ error: metrics.error });
+  const updated = db.saveSubmissionReviewById(submissionId, { ...metrics, payout: payoutNum, verifiedAt: Date.now() });
   res.json({ ok: true, submission: updated });
 });
 
@@ -116,19 +123,46 @@ router.post("/submissions/:campaignId/:creatorId/review", (req, res) => {
  * confirmation email link. */
 router.post("/submissions/:campaignId/:creatorId/mark-paid", (req, res) => {
   const { campaignId, creatorId } = req.params;
-  const sub = db.findSubmission(campaignId, creatorId);
+  const matching = db.listSubmissionsForCampaign(campaignId).filter((s) => s.creator_id === creatorId);
+  if (matching.length > 1) return res.status(409).json({ error: "Use the submission ID endpoint when this creator has multiple campaign links." });
+  const sub = matching[0];
   if (!sub) return res.status(404).json({ error: "Submission not found." });
-  if (sub.status !== "verified") return res.status(409).json({ error: "Review and set a payout amount before marking it paid." });
   if (sub.status === "paid") return res.status(409).json({ error: "Already marked paid." });
+  if (sub.status !== "verified") return res.status(409).json({ error: "Review and set a payout amount before marking it paid." });
 
-  db.markSubmissionPaid(campaignId, creatorId, Date.now());
-  db.creditCreatorPayout(creatorId, sub.payout);
-  db.insertTransaction({ id: require("../utils/ids").id("tx"), creatorId, campaignId, amount: sub.payout, ts: Date.now() });
+  completeSubmissionPayment(sub);
+  res.json(paymentConfirmation(sub));
+});
+router.post("/submissions/:submissionId/mark-paid", (req, res) => {
+  const sub = db.findSubmissionById(req.params.submissionId);
+  if (!sub) return res.status(404).json({ error: "Submission not found." });
+  if (sub.status === "paid") return res.status(409).json({ error: "Already marked paid." });
+  if (sub.status !== "verified") return res.status(409).json({ error: "Review and set a payout amount before marking it paid." });
+  completeSubmissionPayment(sub);
+  res.json(paymentConfirmation(sub));
+});
 
-  const creator = db.findCreatorById(creatorId);
-  const campaign = db.findCampaignById(campaignId);
+function submissionMetrics(views, likes) {
+  const parsedViews = Number(views);
+  const parsedLikes = Number(likes);
+  if (views === undefined || views === "" || !Number.isFinite(parsedViews) || parsedViews < 0) {
+    return { error: "views must be a non-negative number." };
+  }
+  if (likes === undefined || likes === "" || !Number.isFinite(parsedLikes) || parsedLikes < 0) {
+    return { error: "likes must be a non-negative number." };
+  }
+  return { views: parsedViews, likes: parsedLikes };
+}
+function completeSubmissionPayment(sub) {
+  db.markSubmissionPaidById(sub.id, Date.now());
+  db.creditCreatorPayout(sub.creator_id, sub.payout);
+  db.insertTransaction({ id: id("tx"), creatorId: sub.creator_id, campaignId: sub.campaign_id, amount: sub.payout, ts: Date.now() });
+}
+function paymentConfirmation(sub) {
+  const creator = db.findCreatorById(sub.creator_id);
+  const campaign = db.findCampaignById(sub.campaign_id);
   const project = campaign ? db.findProjectById(campaign.project_id) : null;
-  res.json({
+  return {
     ok: true,
     creatorEmail: creator ? creator.email : null,
     creatorName: creator ? creator.name : null,
@@ -136,8 +170,8 @@ router.post("/submissions/:campaignId/:creatorId/mark-paid", (req, res) => {
     projectEmail: project ? project.email : null,
     projectName: project ? project.name : null,
     amount: sub.payout,
-  });
-});
+  };
+}
 
 router.get("/rankings", (req, res) => res.json(db.computeLeaderboardRaw()));
 router.get("/ledger", (req, res) => res.json(db.getLedgerView()));

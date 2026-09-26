@@ -32,6 +32,10 @@ router.get("/me/campaigns", (req, res) => {
   res.json(db.getCreatorCampaignsView(req.auth.id));
 });
 
+router.get("/campaigns", (req, res) => {
+  res.json(db.getCreatorCampaignMarketplaceView(req.auth.id));
+});
+
 /** Just records the link. Views/likes/payout are filled in later by an
  * admin who's actually looked at the post — there's no automatic scoring. */
 router.post("/me/campaigns/:campaignId/submit", (req, res) => {
@@ -42,9 +46,10 @@ router.post("/me/campaigns/:campaignId/submit", (req, res) => {
   const campaign = db.findCampaignById(campaignId);
   if (!campaign) return res.status(404).json({ error: "Campaign not found." });
   if (!db.isAssigned(campaignId, req.auth.id)) return res.status(403).json({ error: "You are not assigned to this campaign." });
+  if (!db.isCampaignOpen(campaign)) return res.status(410).json({ error: "This campaign has ended and is no longer accepting links." });
 
-  db.upsertSubmissionLink(campaignId, req.auth.id, postUrl, Date.now());
-  res.json({ ok: true });
+  const submission = db.addSubmissionLink(campaignId, req.auth.id, postUrl, Date.now());
+  res.status(201).json({ ok: true, submissionId: submission.id });
 });
 
 router.get("/me/payments", (req, res) => {

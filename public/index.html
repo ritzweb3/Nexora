@@ -464,7 +464,8 @@ function sidebar(role, activeKey, name){
   var links = {
     creator: [
       ["overview","/creator","Overview"],
-      ["campaigns","/creator/campaigns","My campaigns"],
+      ["campaigns","/creator/campaigns","Campaign marketplace"],
+      ["leaderboard","/creator/leaderboard","Leaderboard"],
       ["social","/creator/socials","Connected accounts"],
       ["wallet","/creator/payments","Payments"]
     ],
@@ -477,6 +478,7 @@ function sidebar(role, activeKey, name){
       ["overview","/admin","Overview"],
       ["campaigns","/admin/campaigns","Campaigns"],
       ["flag","/admin/submissions","Submissions queue"],
+      ["leaderboard","/admin/rankings","Leaderboard"],
       ["people","/admin/creators","Creators"],
       ["finance","/admin/financials","Financials"],
       ["ledger","/admin/ledger","Payout ledger"]
@@ -719,11 +721,17 @@ route("/creator/campaigns", async function(){
   requireRole("creator");
   var me = await apiGet("/creators/me");
   if(!me.walletAddress) return walletGateHtml(me);
-  var campaigns = await apiGet("/creators/me/campaigns");
+  var campaigns = await apiGet("/creators/campaigns");
   return dashShell("creator","campaigns",me.name,
-    '<div class="topbar"><div><h1>My campaigns</h1><div class="sub">Paste the link to your post once it\'s live. We\'ll check the views and likes ourselves.</div></div></div>' +
-    (campaigns.length ? campaigns.map(campaignCardFull).join("") : emptyState("No campaigns assigned yet","Make sure your socials are connected so we know how to reach you."))
+    '<div class="topbar"><div><h1>Campaign marketplace</h1><div class="sub">Browse every campaign on Nexora. You can submit links only to campaigns you have been assigned to, and add as many as you like before the deadline.</div></div></div>' +
+    (campaigns.length ? campaigns.map(campaignCardFull).join("") : emptyState("No campaigns yet","New campaigns will appear here."))
   );
+});
+route("/creator/leaderboard", async function(){
+  requireRole("creator");
+  var me = await apiGet("/creators/me");
+  var rankings = await apiGet("/creators/leaderboard");
+  return dashShell("creator","leaderboard",me.name,leaderboardView(rankings));
 });
 route("/creator/socials", async function(){
   requireRole("creator");
@@ -778,7 +786,7 @@ function campaignRowMini(cp){
 /* ---- Multiple post links per campaign ---- */
 function subLinks(o){
   if(!o) return [];
-  var arr = o.postUrls || o.links || null;
+  var arr = o.postUrls || o.links || o.submissions || null;
   if(arr && arr.length) return arr.map(function(l){ return typeof l === "string" ? l : (l && (l.url || l.postUrl)); }).filter(Boolean);
   return o.postUrl ? [o.postUrl] : [];
 }
@@ -788,6 +796,17 @@ function linksInline(o){
   return l.map(function(u,i){
     return '<a href="'+escapeHtml(u)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+(l.length>1 ? 'link '+(i+1) : 'view')+'</a>';
   }).join(" · ");
+}
+function assignmentRows(assignments,campaignId,allowRemove){
+  return assignments.map(function(a){
+    var submissions = a.submissions || [];
+    var rows = submissions.length ? submissions : [{postUrl:null,views:null,likes:null,payout:0,status:"no_submission"}];
+    return rows.map(function(s,index){
+      return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+linksInline(s)+'</td><td>'+fmtNum(s.views)+'</td><td>'+fmtNum(s.likes)+'</td><td>'+fmtMoney(s.payout)+'</td><td>'+statusPillFor(s.status)+'</td>' +
+        (allowRemove ? '<td>'+(index===0 ? '<button class="btn btn-line btn-sm" data-action="unassignCreator" data-camp="'+campaignId+'" data-creator="'+a.creatorId+'">Remove</button>' : '')+'</td>' : '')+
+        '</tr>';
+    }).join("");
+  }).join("");
 }
 function campaignEnd(cp){
   if(cp.endsAt) return new Date(cp.endsAt);
@@ -812,41 +831,56 @@ function campaignDeadlineNote(cp){
 }
 
 function campaignCardFull(cp){
-  var sub = cp.submission;
+  var submissions = cp.submissions || (cp.submission ? [cp.submission] : []);
   var html = '<div class="camp-card">' +
-    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+escapeHtml(cp.projectName||"")+' · '+cp.durationDays+' days · '+cp.creatorsNeeded+' creators needed'+(cp.paymentVerified ? '' : ' · <span class="pill pill-muted">Payment not yet verified</span>')+'</div></div>'+statusPillFor(sub ? sub.status : "no_submission")+'</div>' +
+    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+escapeHtml(cp.projectName||"")+' · '+cp.durationDays+' days · '+cp.creatorsNeeded+' creators needed'+(cp.paymentVerified ? '' : ' · <span class="pill pill-muted">Payment not yet verified</span>')+'</div></div>'+(cp.isAssigned ? '<span class="pill pill-accent">Assigned to you</span>' : '<span class="pill pill-muted">Not assigned</span>')+'</div>' +
     '<div class="camp-meta" style="margin-top:8px;">'+escapeHtml(cp.description)+'</div>';
-  var open = campaignOpen(cp);
-  var links = subLinks(sub);
-  if(links.length){
-    html += '<div class="camp-meta" style="margin-top:10px;">Your links ('+links.length+'):</div>' +
-      '<ul style="margin:6px 0 0 18px;padding:0;">' + links.map(function(u){
-        return '<li class="camp-meta" style="margin:2px 0;"><a href="'+escapeHtml(u)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+escapeHtml(u.length>60?u.slice(0,57)+"…":u)+'</a></li>';
-      }).join("") + '</ul>';
+  if(cp.projectAbout){
+    html += '<div class="camp-meta" style="margin-top:10px;"><b>About '+escapeHtml(cp.projectName||"this project")+'</b><br>'+escapeHtml(cp.projectAbout)+'</div>';
   }
-  if(sub){
-    if(sub.status === "submitted"){
-      html += '<div class="field-hint" style="margin-top:6px;">Submitted — waiting for us to check your posts and confirm your numbers.</div>';
-    } else if(sub.status === "verified"){
-      html += '<div class="camp-meta" style="margin-top:4px;">Verified: '+fmtNum(sub.views)+' views · '+fmtNum(sub.likes)+' likes · payout <b style="color:var(--accent);">'+fmtMoney(sub.payout)+'</b></div>' +
-        '<div class="field-hint" style="margin-top:6px;">Verified — funds are sent shortly after.</div>';
-    } else if(sub.status === "paid"){
-      html += '<div class="camp-meta" style="margin-top:4px;">Verified: '+fmtNum(sub.views)+' views · '+fmtNum(sub.likes)+' likes</div>' +
-        '<div class="camp-meta" style="margin-top:4px;">Paid: <b style="color:var(--accent);">'+fmtMoney(sub.payout)+'</b></div>';
-    }
+  html += projectSocialLinks(cp.projectSocials);
+  var open = campaignOpen(cp);
+  if(submissions.length){
+    html += '<div class="panel-head" style="margin-top:14px;margin-bottom:8px;"><h3 style="font-size:14px;">Your submitted links ('+submissions.length+')</h3></div>';
+    html += submissions.map(function(sub){
+      return '<div class="camp-meta" style="padding:10px 0;border-top:1px solid var(--border-soft);">'+
+        '<a href="'+escapeHtml(sub.postUrl)+'" target="_blank" rel="noopener" style="color:var(--accent);">'+escapeHtml(sub.postUrl)+'</a> '+statusPillFor(sub.status)+
+        (sub.status === "submitted" ? '<div class="field-hint">Waiting for admin review.</div>' :
+          '<div style="margin-top:4px;">Verified: '+fmtNum(sub.views)+' views · '+fmtNum(sub.likes)+' likes · '+(sub.status === "paid" ? 'Paid ' : 'Payout pending ')+ '<b style="color:var(--accent);">'+fmtMoney(sub.payout)+'</b></div>')+
+        '</div>';
+    }).join("");
   }
   var note = campaignDeadlineNote(cp);
-  if(open){
+  if(cp.isAssigned && open){
     html += '<div class="submit-row" style="grid-template-columns: 1fr auto;">' +
-      '<div class="field"><label>'+(links.length ? 'Add another link' : 'Link to your post')+'</label><input type="url" data-field="postUrl" placeholder="https://x.com/you/status/..."></div>' +
-      '<button class="btn btn-primary btn-sm" data-action="submitLink" data-camp="'+cp.id+'">'+(links.length ? 'Add link' : 'Submit link')+'</button>' +
+      '<div class="field"><label>Add a post link</label><input type="url" data-field="postUrl" placeholder="https://x.com/you/status/..."></div>' +
+      '<button class="btn btn-primary btn-sm" data-action="submitLink" data-camp="'+cp.id+'">Submit link</button>' +
     '</div>' +
-    '<div class="field-hint" style="margin-top:6px;">You can add as many links as you like while the campaign is running.'+(note ? ' '+note+'.' : '')+'</div>';
-  } else {
+    '<div class="field-hint" style="margin-top:6px;">Submit as many links as you like until the campaign deadline.'+(note ? ' '+note+'.' : '')+'</div>';
+  } else if(cp.isAssigned) {
     html += '<div class="field-hint" style="margin-top:10px;">'+(note || "This campaign has ended")+' — new links can no longer be added.</div>';
+  } else {
+    html += '<div class="field-hint" style="margin-top:10px;">Only creators assigned by the campaign admin can submit links.</div>';
   }
   html += '</div>';
   return html;
+}
+function projectSocialLinks(socials){
+  var entries = Object.entries(socials || {}).filter(function(entry){ return entry[1]; });
+  if(!entries.length) return "";
+  var bases = {twitter:"https://x.com/",tiktok:"https://www.tiktok.com/@",instagram:"https://www.instagram.com/",youtube:"https://www.youtube.com/"};
+  return '<div class="camp-meta" style="margin-top:8px;"><b>Project socials:</b> '+entries.map(function(entry){
+    var value = String(entry[1]).trim();
+    var href = /^https?:\/\//i.test(value) ? value : bases[entry[0]] + encodeURIComponent(value.replace(/^@/,""));
+    var label = {twitter:"X",tiktok:"TikTok",instagram:"Instagram",youtube:"YouTube"}[entry[0]] || entry[0];
+    return '<a href="'+escapeHtml(href)+'" target="_blank" rel="noopener" style="color:var(--accent);margin-left:8px;">'+label+'</a>';
+  }).join("")+'</div>';
+}
+function leaderboardView(rankings){
+  return '<div class="topbar"><div><h1>Creator leaderboard</h1><div class="sub">Verified post views and likes are counted. Paid totals include completed creator payouts.</div></div></div>' +
+    '<div class="panel">'+(rankings.length ? '<table><thead><tr><th>Rank</th><th>Creator</th><th>Verified links</th><th>Total views</th><th>Total likes</th><th>Total paid</th></tr></thead><tbody>'+
+      rankings.map(function(c,index){ return '<tr><td>'+(index+1)+'</td><td class="row-name">'+escapeHtml(c.name)+'</td><td>'+fmtNum(c.verifiedLinks)+'</td><td>'+fmtNum(c.totalViews)+'</td><td>'+fmtNum(c.totalLikes)+'</td><td>'+fmtMoney(c.totalPaid)+'</td></tr>'; }).join("")+
+      '</tbody></table>' : emptyState("No creators onboarded yet","Creator rankings will appear here once verified posts are reviewed."))+'</div>';
 }
 
 /* =========================================================
@@ -883,6 +917,15 @@ route("/project/new", async function(){
       '<form id="campaignForm">' +
         '<div class="field"><label>Campaign title</label><input required name="title" placeholder="e.g. Mainnet launch thread"></div>' +
         '<div class="field"><label>Description / brief</label><textarea required name="description" rows="4" placeholder="What should the creator make, and what should it cover?"></textarea></div>' +
+        '<div class="field"><label>About your project</label><textarea required name="projectAbout" rows="3" placeholder="Tell creators what your project does and what makes it worth sharing."></textarea></div>' +
+        '<div class="field"><label>Your social media handles</label><div class="field-hint" style="margin-bottom:8px;">Add at least one handle or profile URL so creators can learn about your project.</div>' +
+          '<div class="social-grid">' +
+            '<div class="social-item"><span class="plat">X</span><input name="socialTwitter" placeholder="@yourproject"></div>' +
+            '<div class="social-item"><span class="plat">TikTok</span><input name="socialTiktok" placeholder="@yourproject"></div>' +
+            '<div class="social-item"><span class="plat">Instagram</span><input name="socialInstagram" placeholder="@yourproject"></div>' +
+            '<div class="social-item"><span class="plat">YouTube</span><input name="socialYoutube" placeholder="@yourproject"></div>' +
+          '</div>' +
+        '</div>' +
         '<div class="field"><label>How many creators do you need?</label><input required type="number" min="1" name="creatorsNeeded" placeholder="5"></div>' +
         '<div class="field"><label>How long should the campaign run (days)?</label><input required type="number" min="1" name="durationDays" placeholder="14"></div>' +
         '<div class="field"><label>Amount you\'re sending (optional, helps us confirm faster)</label><input type="number" min="0" step="0.01" name="amountSent" placeholder="1000"></div>' +
@@ -918,6 +961,7 @@ function projectCampaignFull(cp){
   var html = '<div class="camp-card" data-campaign="'+cp.id+'">' +
     '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+cp.creatorsNeeded+' creators needed · '+cp.durationDays+' days'+(cp.amountSent?' · '+fmtMoney(cp.amountSent):'')+'</div></div>'+paymentStatusPill(cp)+'</div>' +
     '<div class="camp-meta" style="margin-top:8px;">'+escapeHtml(cp.description)+'</div>';
+  if(cp.projectAbout) html += '<div class="camp-meta" style="margin-top:8px;"><b>About your project:</b> '+escapeHtml(cp.projectAbout)+'</div>'+projectSocialLinks(cp.projectSocials);
   if(!cp.paymentSent){
     html += '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="markPaymentSent" data-camp="'+cp.id+'">I\'ve sent the funds</button></div>';
   } else if(!cp.paymentVerified){
@@ -925,9 +969,7 @@ function projectCampaignFull(cp){
   }
   if(cp.assignments && cp.assignments.length){
     html += '<table style="margin-top:14px;"><thead><tr><th>Creator</th><th>Post</th><th>Views</th><th>Likes</th><th>Payout</th><th>Status</th></tr></thead><tbody>' +
-      cp.assignments.map(function(a){
-        return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+linksInline(a)+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td></tr>';
-      }).join("") + '</tbody></table>';
+      assignmentRows(cp.assignments,cp.id,false) + '</tbody></table>';
   } else if(cp.paymentVerified){
     html += '<div class="camp-meta" style="margin-top:10px;">No creators assigned yet.</div>';
   }
@@ -972,6 +1014,7 @@ function adminCampaignCard(cp, creators){
   var html = '<div class="camp-card">' +
     '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(cp.title)+'</div><div class="camp-meta">'+escapeHtml(cp.projectName)+' ('+escapeHtml(cp.projectEmail||"")+') · '+cp.creatorsNeeded+' creators · '+cp.durationDays+' days'+(cp.amountSent?' · '+fmtMoney(cp.amountSent):'')+'</div></div>'+paymentStatusPill(cp)+'</div>' +
     '<div class="camp-meta" style="margin-top:8px;">'+escapeHtml(cp.description)+'</div>';
+  if(cp.projectAbout) html += '<div class="camp-meta" style="margin-top:8px;"><b>About the project:</b> '+escapeHtml(cp.projectAbout)+'</div>'+projectSocialLinks(cp.projectSocials);
   if(cp.paymentSent && !cp.paymentVerified){
     html += '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="verifyPayment" data-camp="'+cp.id+'">Mark payment verified</button></div>';
   } else if(!cp.paymentSent){
@@ -987,9 +1030,7 @@ function adminCampaignCard(cp, creators){
     '</div>';
     if(cp.assignments && cp.assignments.length){
       html += '<table><thead><tr><th>Creator</th><th>Post</th><th>Views</th><th>Likes</th><th>Payout</th><th>Status</th><th></th></tr></thead><tbody>' +
-        cp.assignments.map(function(a){
-          return '<tr><td class="row-name">'+escapeHtml(a.creatorName)+'</td><td>'+linksInline(a)+'</td><td>'+fmtNum(a.views)+'</td><td>'+fmtNum(a.likes)+'</td><td>'+fmtMoney(a.payout)+'</td><td>'+statusPillFor(a.status)+'</td><td><button class="btn btn-line btn-sm" data-action="unassignCreator" data-camp="'+cp.id+'" data-creator="'+a.creatorId+'">Remove</button></td></tr>';
-        }).join("") + '</tbody></table>';
+        assignmentRows(cp.assignments,cp.id,true) + '</tbody></table>';
     } else {
       html += emptyState("No creators assigned yet","Pick one from the list above.");
     }
@@ -999,27 +1040,29 @@ function adminCampaignCard(cp, creators){
 }
 route("/admin/submissions", async function(){
   requireRole("admin");
-  var pending = await apiGet("/admin/submissions/pending");
+  var submissions = await apiGet("/admin/submissions/all");
   var rates = await apiGet("/admin/rates");
   return dashShell("admin","flag","Admin",
-    '<div class="topbar"><div><h1>Submissions queue</h1><div class="sub">Suggested rate: '+fmtMoney(rates.ratePer1000Views)+' / 1,000 views, '+fmtMoney(rates.ratePer500Likes)+' / 500 likes (edit via .env).</div></div></div>' +
-    (pending.length ? pending.map(adminSubmissionCard).join("") : emptyState("Nothing waiting on you","Submissions show up here once a creator posts a link."))
+    '<div class="topbar"><div><h1>Submission tracking</h1><div class="sub">All creator links and their review/payment status. Suggested rate: '+fmtMoney(rates.ratePer1000Views)+' / 1,000 views, '+fmtMoney(rates.ratePer500Likes)+' / 500 likes (edit via .env).</div></div></div>' +
+    (submissions.length ? submissions.map(adminSubmissionCard).join("") : emptyState("No submissions yet","Creator links will appear here as they are submitted."))
   );
 });
 function adminSubmissionCard(s){
   var html = '<div class="camp-card">' +
-    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(s.creatorName)+'</div><div class="camp-meta">'+escapeHtml(s.campaignTitle)+(subLinks(s).length?' · '+linksInline(s):'')+'</div></div>'+statusPillFor(s.status)+'</div>';
+    '<div class="camp-top"><div><div class="camp-title">'+escapeHtml(s.creatorName)+'</div><div class="camp-meta">'+escapeHtml(s.campaignTitle)+(subLinks(s).length?' · '+linksInline(s):'')+' · submitted '+timeAgo(s.submittedAt)+'</div></div>'+statusPillFor(s.status)+'</div>';
   if(s.status === "submitted"){
     html += '<div class="submit-row">' +
       '<div class="field"><label>Views</label><input type="number" min="0" class="rv-views" placeholder="0"></div>' +
       '<div class="field"><label>Likes</label><input type="number" min="0" class="rv-likes" placeholder="0"></div>' +
       '<div class="field"><label>Payout ($)</label><input type="number" min="0" step="0.01" class="rv-payout" placeholder="0.00"></div>' +
-      '<button class="btn btn-line btn-sm" data-action="suggestPayout" data-campaign="'+s.campaignId+'" data-creator="'+s.creatorId+'">Suggest</button>' +
+      '<button class="btn btn-line btn-sm" data-action="suggestPayout" data-submission="'+s.id+'">Suggest</button>' +
     '</div>' +
-    '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="reviewSubmission" data-campaign="'+s.campaignId+'" data-creator="'+s.creatorId+'">Save review</button></div>';
+    '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="reviewSubmission" data-submission="'+s.id+'">Save review</button></div>';
   } else if(s.status === "verified"){
     html += '<div class="camp-meta" style="margin-top:8px;">Verified: '+fmtNum(s.views)+' views · '+fmtNum(s.likes)+' likes · payout <b>'+fmtMoney(s.payout)+'</b></div>' +
-      '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="markPaid" data-campaign="'+s.campaignId+'" data-creator="'+s.creatorId+'">Mark as paid</button></div>';
+      '<div class="camp-actions"><button class="btn btn-primary btn-sm" data-action="markPaid" data-submission="'+s.id+'">Mark as paid</button></div>';
+  } else if(s.status === "paid"){
+    html += '<div class="camp-meta" style="margin-top:8px;">Verified: '+fmtNum(s.views)+' views · '+fmtNum(s.likes)+' likes · paid '+fmtMoney(s.payout)+' on '+new Date(s.paidAt).toLocaleDateString()+'</div>';
   }
   html += '</div>';
   return html;
@@ -1037,6 +1080,11 @@ route("/admin/creators", async function(){
         }).join("") + '</tbody></table>' : emptyState("No creators yet","")) +
     '</div>'
   );
+});
+route("/admin/rankings", async function(){
+  requireRole("admin");
+  var rankings = await apiGet("/admin/rankings");
+  return dashShell("admin","leaderboard","Admin",leaderboardView(rankings));
 });
 route("/admin/financials", async function(){
   requireRole("admin");
@@ -1204,6 +1252,11 @@ function wireGlobal(){
       try{
         await apiPost("/projects/campaigns", {
           title: data.get("title"), description: data.get("description"),
+          projectAbout: data.get("projectAbout"),
+          socials: {
+            twitter: data.get("socialTwitter"), tiktok: data.get("socialTiktok"),
+            instagram: data.get("socialInstagram"), youtube: data.get("socialYoutube")
+          },
           creatorsNeeded: Number(data.get("creatorsNeeded")), durationDays: Number(data.get("durationDays")),
           amountSent: data.get("amountSent") || null, paymentSent: document.getElementById("paymentSentBox").checked
         });
@@ -1277,14 +1330,15 @@ function wireGlobal(){
   });
   document.querySelectorAll('[data-action="reviewSubmission"]').forEach(function(btn){
     btn.addEventListener("click", async function(){
-      var campId = btn.getAttribute("data-campaign"), creatorId = btn.getAttribute("data-creator");
+      var submissionId = btn.getAttribute("data-submission");
       var card = btn.closest(".camp-card");
       var views = card.querySelector(".rv-views").value;
       var likes = card.querySelector(".rv-likes").value;
       var payout = card.querySelector(".rv-payout").value;
       if(payout === ""){ toast("Enter a payout amount (use Suggest, or type your own).", true); return; }
+      if(views === "" || likes === ""){ toast("Enter the verified view and like counts.", true); return; }
       try{
-        await apiPost("/admin/submissions/"+campId+"/"+creatorId+"/review", { views: views, likes: likes, payout: payout });
+        await apiPost("/admin/submissions/"+submissionId+"/review", { views: views, likes: likes, payout: payout });
         toast("Review saved.");
         render();
       }catch(err){ toast(err.message, true); }
@@ -1292,9 +1346,8 @@ function wireGlobal(){
   });
   document.querySelectorAll('[data-action="markPaid"]').forEach(function(btn){
     btn.addEventListener("click", async function(){
-      var campId = btn.getAttribute("data-campaign"), creatorId = btn.getAttribute("data-creator");
       try{
-        var result = await apiPost("/admin/submissions/"+campId+"/"+creatorId+"/mark-paid", {});
+        var result = await apiPost("/admin/submissions/"+btn.getAttribute("data-submission")+"/mark-paid", {});
         toast("Marked as paid.");
         if(result.creatorEmail){
           showEmailDraft(result.creatorEmail,

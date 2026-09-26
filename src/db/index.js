@@ -5,6 +5,7 @@
 const fs = require("fs");
 const path = require("path");
 const bcrypt = require("bcryptjs");
+const { id } = require("../utils/ids");
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "..", "nexora-data.json");
 
@@ -24,6 +25,14 @@ Object.assign(data, emptyData(), data);
 function save() {
   fs.writeFileSync(DB_PATH, JSON.stringify(data), "utf8");
 }
+let migratedSubmissionIds = false;
+data.submissions.forEach((submission) => {
+  if (!submission.id) {
+    submission.id = id("sb");
+    migratedSubmissionIds = true;
+  }
+});
+if (migratedSubmissionIds) save();
 
 /* ---------------------------------------------------------
    admins
@@ -113,6 +122,9 @@ function insertProject(p) {
 function insertCampaign(c) {
   const row = {
     id: c.id, project_id: c.projectId, title: c.title, description: c.description,
+    project_about: c.projectAbout || "",
+    social_twitter: c.socials && c.socials.twitter || "", social_tiktok: c.socials && c.socials.tiktok || "",
+    social_instagram: c.socials && c.socials.instagram || "", social_youtube: c.socials && c.socials.youtube || "",
     creators_needed: c.creatorsNeeded, duration_days: c.durationDays, amount_sent: c.amountSent || null,
     payment_sent: !!c.paymentSent, payment_verified: false, verified_at: null,
     created_at: c.createdAt || Date.now(),
@@ -148,6 +160,13 @@ function markCampaignPaymentVerified(id, verifiedAt) {
   return c;
 }
 function countCampaigns() { return data.campaigns.length; }
+function campaignEndsAt(campaign) {
+  const startedAt = campaign.verified_at || campaign.created_at;
+  return Number(startedAt) + Number(campaign.duration_days) * 86400000;
+}
+function isCampaignOpen(campaign, now) {
+  return Number(now === undefined ? Date.now() : now) < campaignEndsAt(campaign);
+}
 
 /* ---------------------------------------------------------
    campaign_assignments — created manually by admin, not an algorithm
@@ -165,7 +184,6 @@ function unassignCreator(campaignId, creatorId) {
   const before = data.campaignAssignments.length;
   data.campaignAssignments = data.campaignAssignments.filter((a) => !(a.campaign_id === campaignId && a.creator_id === creatorId));
   if (data.campaignAssignments.length !== before) {
-    data.submissions = data.submissions.filter((s) => !(s.campaign_id === campaignId && s.creator_id === creatorId));
     save();
   }
 }
@@ -186,32 +204,31 @@ function listAssignedCreatorIdsForCampaign(campaignId) {
 function findSubmission(campaignId, creatorId) {
   return data.submissions.find((s) => s.campaign_id === campaignId && s.creator_id === creatorId) || null;
 }
+function findSubmissionById(submissionId) {
+  return data.submissions.find((s) => s.id === submissionId) || null;
+}
 function listSubmissionsForCampaign(campaignId) {
   return data.submissions.filter((s) => s.campaign_id === campaignId);
 }
-function upsertSubmissionLink(campaignId, creatorId, postUrl, submittedAt) {
-  const existing = findSubmission(campaignId, creatorId);
-  if (existing) {
-    existing.post_url = postUrl;
-    existing.submitted_at = submittedAt;
-    // resubmitting a link resets any prior manual review
-    existing.views = null;
-    existing.likes = null;
-    existing.payout = 0;
-    existing.status = "submitted";
-    existing.verified_at = null;
-    existing.paid_at = null;
-  } else {
-    data.submissions.push({
-      campaign_id: campaignId, creator_id: creatorId, post_url: postUrl,
-      views: null, likes: null, payout: 0, status: "submitted",
-      submitted_at: submittedAt, verified_at: null, paid_at: null,
-    });
-  }
-  save();
+function listSubmissionsForCreator(creatorId) {
+  return data.submissions.filter((s) => s.creator_id === creatorId).sort((a, b) => b.submitted_at - a.submitted_at);
 }
-function saveSubmissionReview(campaignId, creatorId, { views, likes, payout, verifiedAt }) {
-  const s = findSubmission(campaignId, creatorId);
+function addSubmissionLink(campaignId, creatorId, postUrl, submittedAt, submissionId) {
+  const submission = {
+    id: submissionId || id("sb"),
+    campaign_id: campaignId, creator_id: creatorId, post_url: postUrl,
+    views: null, likes: null, payout: 0, status: "submitted",
+    submitted_at: submittedAt, verified_at: null, paid_at: null,
+  };
+  data.submissions.push(submission);
+  save();
+  return submission;
+}
+function upsertSubmissionLink(campaignId, creatorId, postUrl, submittedAt) {
+  return addSubmissionLink(campaignId, creatorId, postUrl, submittedAt);
+}
+function saveSubmissionReviewById(submissionId, { views, likes, payout, verifiedAt }) {
+  const s = findSubmissionById(submissionId);
   if (!s) return null;
   s.views = views;
   s.likes = likes;
@@ -221,13 +238,21 @@ function saveSubmissionReview(campaignId, creatorId, { views, likes, payout, ver
   save();
   return s;
 }
-function markSubmissionPaid(campaignId, creatorId, paidAt) {
+function saveSubmissionReview(campaignId, creatorId, review) {
   const s = findSubmission(campaignId, creatorId);
+  return s ? saveSubmissionReviewById(s.id, review) : null;
+}
+function markSubmissionPaidById(submissionId, paidAt) {
+  const s = findSubmissionById(submissionId);
   if (!s) return null;
   s.status = "paid";
   s.paid_at = paidAt;
   save();
   return s;
+}
+function markSubmissionPaid(campaignId, creatorId, paidAt) {
+  const s = findSubmission(campaignId, creatorId);
+  return s ? markSubmissionPaidById(s.id, paidAt) : null;
 }
 
 /* ---------------------------------------------------------
@@ -253,28 +278,66 @@ function getCreatorCampaignsView(creatorId) {
       const c = findCampaignById(a.campaign_id);
       if (!c) return null;
       const project = findProjectById(c.project_id);
-      const sub = findSubmission(c.id, creatorId);
+      const creatorSubmissions = listSubmissionsForCampaign(c.id)
+        .filter((submission) => submission.creator_id === creatorId);
+      const sub = creatorSubmissions.length ? creatorSubmissions[creatorSubmissions.length - 1] : null;
       return {
         id: c.id, title: c.title, description: c.description,
         creatorsNeeded: c.creators_needed, durationDays: c.duration_days,
         paymentVerified: c.payment_verified, projectName: project ? project.name : null,
+        projectAbout: c.project_about || "",
+        projectSocials: campaignSocials(c),
+        createdAt: c.created_at, verifiedAt: c.verified_at, endsAt: campaignEndsAt(c),
+        isAssigned: true,
+        submissions: creatorSubmissions.map(submissionView),
         _createdAt: c.created_at,
-        submission: sub
-          ? { postUrl: sub.post_url, views: sub.views, likes: sub.likes, payout: sub.payout, status: sub.status }
-          : null,
+        submission: sub ? submissionView(sub) : null,
       };
     })
     .filter(Boolean)
     .sort((a, b) => b._createdAt - a._createdAt)
     .map(({ _createdAt, ...rest }) => rest);
 }
+function getCreatorCampaignMarketplaceView(creatorId) {
+  return listAllCampaigns().map((c) => {
+    const project = findProjectById(c.project_id);
+    const assigned = isAssigned(c.id, creatorId);
+    return {
+      id: c.id, title: c.title, description: c.description,
+      creatorsNeeded: c.creators_needed, durationDays: c.duration_days,
+      paymentVerified: c.payment_verified, projectName: project ? project.name : null,
+      projectAbout: c.project_about || "",
+      projectSocials: campaignSocials(c),
+      createdAt: c.created_at, verifiedAt: c.verified_at, endsAt: campaignEndsAt(c),
+      isAssigned: assigned,
+      submissions: listSubmissionsForCampaign(c.id)
+        .filter((s) => s.creator_id === creatorId)
+        .map(submissionView),
+    };
+  });
+}
+function campaignSocials(campaign) {
+  return {
+    twitter: campaign.social_twitter || "",
+    tiktok: campaign.social_tiktok || "",
+    instagram: campaign.social_instagram || "",
+    youtube: campaign.social_youtube || "",
+  };
+}
+function submissionView(s) {
+  return {
+    id: s.id, postUrl: s.post_url, views: s.views, likes: s.likes, payout: s.payout,
+    status: s.status, submittedAt: s.submitted_at, verifiedAt: s.verified_at, paidAt: s.paid_at,
+  };
+}
 function getCampaignSubmissionsView(campaignId) {
   return listSubmissionsForCampaign(campaignId).map((s) => {
     const creator = findCreatorById(s.creator_id);
     return {
-      creatorId: s.creator_id, creatorName: creator ? creator.name : "—",
+      id: s.id, creatorId: s.creator_id, creatorName: creator ? creator.name : "—",
       creatorWallet: creator ? creator.wallet_address : null,
       postUrl: s.post_url, views: s.views, likes: s.likes, payout: s.payout, status: s.status,
+      submittedAt: s.submitted_at, verifiedAt: s.verified_at, paidAt: s.paid_at,
     };
   });
 }
@@ -288,13 +351,32 @@ function getCampaignAssignmentsView(campaignId) {
       creatorId, creatorName: creator ? creator.name : "—", creatorWallet: creator ? creator.wallet_address : null,
       postUrl: s ? s.post_url : null, views: s ? s.views : null, likes: s ? s.likes : null,
       payout: s ? s.payout : 0, status: s ? s.status : "no_submission",
+      submissions: listSubmissionsForCampaign(campaignId).filter((item) => item.creator_id === creatorId).map(submissionView),
     };
   });
 }
 function computeLeaderboardRaw() {
   return data.creators
-    .map((c) => ({ id: c.id, name: c.name, totalEarned: c.total_earned }))
-    .sort((a, b) => b.totalEarned - a.totalEarned);
+    .map((c) => {
+      const verified = listSubmissionsForCreator(c.id).filter((s) => s.status === "verified" || s.status === "paid");
+      const totalViews = verified.reduce((total, s) => total + (Number(s.views) || 0), 0);
+      const totalLikes = verified.reduce((total, s) => total + (Number(s.likes) || 0), 0);
+      return {
+        id: c.id, name: c.name, totalViews, totalLikes,
+        verifiedLinks: verified.length,
+        totalEngagement: totalViews + totalLikes,
+        totalPaid: Number(c.total_earned) || 0,
+        totalEarned: Number(c.total_earned) || 0,
+      };
+    })
+    .sort((a, b) => b.totalEngagement - a.totalEngagement || b.totalPaid - a.totalPaid || a.name.localeCompare(b.name));
+}
+function getAllSubmissionsView() {
+  return listAllCampaigns().flatMap((campaign) => getCampaignSubmissionsView(campaign.id).map((s) => ({
+    ...s,
+    campaignId: campaign.id,
+    campaignTitle: campaign.title,
+  }))).sort((a, b) => b.submittedAt - a.submittedAt);
 }
 function getLedgerView() {
   return listAllTransactions().map((t) => {
@@ -317,10 +399,12 @@ module.exports = {
   countCreators, sumCreatorTotalEarned,
   findProjectById, findProjectByEmail, insertProject,
   insertCampaign, findCampaignById, findCampaignByIdAndProject, listCampaignsByProject, listAllCampaigns,
-  markCampaignPaymentVerified, markCampaignPaymentSent, countCampaigns,
+  markCampaignPaymentVerified, markCampaignPaymentSent, countCampaigns, campaignEndsAt, isCampaignOpen,
   isAssigned, assignCreator, unassignCreator, countAssignmentsForCampaign, listAssignedCreatorIdsForCampaign,
-  findSubmission, listSubmissionsForCampaign, upsertSubmissionLink, saveSubmissionReview, markSubmissionPaid,
+  findSubmission, findSubmissionById, listSubmissionsForCampaign, listSubmissionsForCreator,
+  addSubmissionLink, upsertSubmissionLink, saveSubmissionReviewById, saveSubmissionReview, markSubmissionPaidById, markSubmissionPaid,
   insertTransaction, listTransactionsForCreator, listAllTransactions,
-  getCreatorCampaignsView, getCampaignSubmissionsView, getCampaignAssignmentsView,
+  getCreatorCampaignsView, getCreatorCampaignMarketplaceView, getCampaignSubmissionsView,
+  getCampaignAssignmentsView, getAllSubmissionsView,
   computeLeaderboardRaw, getLedgerView, countPendingPayouts, countCampaignsAwaitingVerification,
 };

@@ -20,16 +20,26 @@ router.get("/me", (req, res) => {
  * says they've sent the money yet.
  */
 router.post("/campaigns", (req, res) => {
-  const { title, description, creatorsNeeded, durationDays, amountSent, paymentSent } = req.body || {};
+  const { title, description, projectAbout, socials = {}, creatorsNeeded, durationDays, amountSent, paymentSent } = req.body || {};
   const creatorsNeededNum = Number(creatorsNeeded);
   const durationDaysNum = Number(durationDays);
   if (!title || !description) return res.status(400).json({ error: "title and description are required." });
+  if (typeof projectAbout !== "string" || !projectAbout.trim()) return res.status(400).json({ error: "Tell creators what your project is about." });
+  if (!socials || typeof socials !== "object" || Array.isArray(socials)) return res.status(400).json({ error: "Provide social media handles as an object." });
+  const projectSocials = {
+    twitter: String(socials.twitter || "").trim(),
+    tiktok: String(socials.tiktok || "").trim(),
+    instagram: String(socials.instagram || "").trim(),
+    youtube: String(socials.youtube || "").trim(),
+  };
+  if (!Object.values(projectSocials).some(Boolean)) return res.status(400).json({ error: "Add at least one project social media handle." });
   if (!Number.isFinite(creatorsNeededNum) || creatorsNeededNum <= 0) return res.status(400).json({ error: "creatorsNeeded must be a positive number." });
   if (!Number.isFinite(durationDaysNum) || durationDaysNum <= 0) return res.status(400).json({ error: "durationDays must be a positive number." });
 
   const campaignId = id("cp");
   const row = db.insertCampaign({
     id: campaignId, projectId: req.auth.id, title, description,
+    projectAbout: projectAbout.trim(), socials: projectSocials,
     creatorsNeeded: creatorsNeededNum, durationDays: durationDaysNum,
     amountSent: amountSent ? Number(amountSent) : null,
     paymentSent: !!paymentSent,
@@ -63,9 +73,14 @@ router.get("/campaigns/:id", (req, res) => {
 function campaignSummary(c) {
   return {
     id: c.id, title: c.title, description: c.description,
+    projectAbout: c.project_about || "",
+    projectSocials: {
+      twitter: c.social_twitter || "", tiktok: c.social_tiktok || "",
+      instagram: c.social_instagram || "", youtube: c.social_youtube || "",
+    },
     creatorsNeeded: c.creators_needed, durationDays: c.duration_days,
     amountSent: c.amount_sent, paymentSent: c.payment_sent, paymentVerified: c.payment_verified,
-    verifiedAt: c.verified_at, createdAt: c.created_at,
+    verifiedAt: c.verified_at, createdAt: c.created_at, endsAt: db.campaignEndsAt(c),
   };
 }
 
